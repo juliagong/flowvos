@@ -18,22 +18,10 @@ from libs.models.models import STAN
 from libs.config import getCfg
 from eval import eval_results
 
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.utils.data as data
-import libs.utils.logger as logger
+import torch, torch.nn as nn, torch.optim as optim, torch.utils.data as data, libs.utils.logger as logger
 #import libs.dataset.dali as dali
 
-import numpy as np
-import os
-import os.path as osp
-import shutil
-import time
-import pickle
-import argparse
-import cv2
-import copy
+import numpy as np, os, os.path as osp, shutil, time, pickle, argparse, cv2, copy
 
 from progress.bar import Bar
 from collections import OrderedDict
@@ -59,29 +47,20 @@ def main():
 
     if not os.path.isdir(opt.checkpoint):
         os.makedirs(opt.checkpoint)
-
     opt.output = osp.join(osp.join(opt.checkpoint, opt.output_dir))
     if not osp.exists(opt.output):
         os.mkdir(opt.output)
-
     logfile = osp.join(opt.checkpoint, opt.mode+'_log.txt')
     logger.setup(filename=logfile, resume=opt.resume != '')
     log = logger.getLogger(__name__)
 
     # Data
     log.info('Preparing dataset')
-
-    input_dim = tuple(opt.input_size)
-
-    train_transformer = TrainTransform(size=input_dim)
-    test_transformer = TestTransform(size=input_dim)
-
-    datalist = []
+    input_dim, train_transformer, test_transformer, datalist = tuple(opt.input_size), TrainTransform(size=input_dim), TestTransform(size=input_dim), []
     for dataset, freq, max_skip in zip(opt.trainset, opt.datafreq, opt.max_skip):
 
         if opt.data_backend == 'DALI' and not dataset.startswith('DALI'):
             dataset = 'DALI' + dataset
-
         ds = build_dataset(
             name=dataset,
             train=True, 
@@ -91,10 +70,7 @@ def main():
             samples_per_video=opt.samples_per_video
         )
         datalist += [copy.deepcopy(ds) for _ in range(freq)]
-
-    trainset = data.ConcatDataset(datalist)
-
-    testset = build_dataset(
+    trainset, testset = data.ConcatDataset(datalist), build_dataset(
         name=opt.valset,
         train=False,
         transform=test_transformer,
@@ -126,21 +102,19 @@ def main():
     for p in net.parameters():
         p.requires_grad = True
 
-    criterion, fcriterion = None, None
-    celoss = cross_entropy_loss
+    criterion, fcriterion, celoss = None, None, cross_entropy_loss
 
     if opt.loss == 'ce':
         criterion = celoss
     elif opt.loss == 'iou':
         criterion = mask_iou_loss
     elif opt.loss == 'both':
-        criterion = lambda pred, target, obj, ref: celoss(pred, target, obj, ref=ref) + mask_iou_loss(pred, target, obj, ref=ref)
-        fcriterion = lambda pred, target, obj, ref: celoss(pred, target, obj, ref=ref) + mask_iou_loss(pred, target, obj, ref=ref)
+        criterion, fcriterion = lambda pred, target, obj, ref: celoss(pred, target, obj, ref=ref) + mask_iou_loss(pred, target, obj, ref=ref), lambda pred, target, obj, ref: celoss(pred, target, obj, ref=ref) + mask_iou_loss(pred, target, obj, ref=ref)
     else:
         raise TypeError('unknown training loss %s' % opt.loss)
-
+            
     optimizer = None
-    
+
     if opt.solver == 'sgd':
 
         optimizer = optim.SGD(net.parameters(), lr=opt.learning_rate,
@@ -153,20 +127,15 @@ def main():
         raise TypeError('unkown solver type %s' % opt.solver)
 
     # Resume
-    title = 'STAN'
-    minloss = float('inf')
-    max_time = 0.0
-
+    title, minloss, max_time = 'STAN', float('inf'), 0.0
     if opt.resume:
         # Load checkpoint.
         log.info('Resuming from checkpoint {}'.format(opt.resume))
         assert os.path.isfile(opt.resume), 'Error: no checkpoint directory found!'
         # opt.checkpoint = os.path.dirname(opt.resume)
-        checkpoint = torch.load(opt.resume, map_location=device)
-        start_epoch = checkpoint['epoch']
+        checkpoint, start_epoch = torch.load(opt.resume, map_location=device), checkpoint['epoch']
         net.load_param(checkpoint['state_dict'])
-        skips = checkpoint['max_skip']
-        best_mean = opt.resume_best
+        skips, best_mean = checkpoint['max_skip'], opt.resume_best
         
         try:
             if isinstance(skips, list):
@@ -188,13 +157,12 @@ def main():
             else:
                 net.load_param(weight['state_dict'])
 
-        start_epoch = 0
-        best_mean = 0.0
+        start_epoch, best_mean = 0, 0.0
 
     # Train and val
     for epoch in range(start_epoch):
         adjust_learning_rate(optimizer, epoch, opt)
-
+            
     for epoch in range(start_epoch, opt.epochs):
 
         print('\nEpoch: [%d | %d] LR: %f' % (epoch + 1, opt.epochs, opt.learning_rate))
@@ -307,16 +275,9 @@ def main():
 def train(trainloader, model, criterion, fcriterion, optimizer, epoch, use_cuda, iter_size, mode, threshold, backend):
     # switch to train mode
 
-    data_time = AverageMeter()
-    loss = AverageMeter()
-
-    end = time.time()
-
-    bar = Bar('Processing', max=len(trainloader))
+    data_time, loss, end, bar = AverageMeter(), AverageMeter(), time.time(), Bar('Processing', max=len(trainloader))
     optimizer.zero_grad()
-
     for batch_idx, data in enumerate(trainloader):
-
         frames, masks, objs, _ = data
         max_obj = masks.shape[2]-1
         
@@ -330,15 +291,8 @@ def train(trainloader, model, criterion, fcriterion, optimizer, epoch, use_cuda,
         N, T, C, H, W = frames.size()
         total_loss = 0.0
         for idx in range(N):
-            frame = frames[idx]
-            mask = masks[idx]
-            num_objects = objs[idx]
-
-            keys = []
-            vals = []
-            scales = []
-            pred = [mask[0:1]]
-            tf = np.random.random() < 0.5
+            frame, mask, num_objects = frames[idx], masks[idx], objs[idx]
+            keys, vals, scales, pred, tf = [], [], [], [mask[0:1]], np.random.random() < 0.5
             for t in range(1, T):
                 # memorize
                 if t-1 == 0:
@@ -347,13 +301,11 @@ def train(trainloader, model, criterion, fcriterion, optimizer, epoch, use_cuda,
                     tmp_mask = out
 
                 key, val, r4 = model(frames=frame[t-1:t], mask=tmp_mask, num_objects=num_objects)
-
                 keys.append(key)
                 vals.append(val)
 
                 # segment
-                tmp_key = torch.cat(keys, dim=1)
-                tmp_val = torch.cat(vals, dim=1)
+                tmp_key, tmp_val = torch.cat(keys, dim=1), torch.cat(vals, dim=1)
 
                 logits, ps, warpm, warpf, flow = model(frames=[frame[t-1:t], frame[t:t+1]], prev_mask=mask[t-1:t] if tf else pred[-1], keys=tmp_key, values=tmp_val,
                   num_objects=num_objects, max_obj=max_obj)
@@ -422,29 +374,14 @@ def test(testloader, model, criterion, epoch, use_cuda, opt):
     data_time = AverageMeter()
 
     bar = Bar('Processing', max=len(testloader))
-
     with torch.no_grad():
         for batch_idx, data in enumerate(testloader):
-
             frames, masks, objs, infos = data
-
             if use_cuda:
-                frames = frames.to(device)
-                masks = masks.to(device)
-                
-            frames = frames[0]
-            masks = masks[0]
-            num_objects = objs[0]
-            info = infos[0]
-            max_obj = masks.shape[1]-1
-            # compute output
-            t1 = time.time()
-
+                frames, masks = frames.to(device), masks.to(device)
+            frames, masks, num_objects, info, max_obj, time = frames[0], masks[0], objs[0], infos[0], masks.shape[1]-1, time.time()
             T, _, H, W = frames.shape
-            pred = [masks[0:1]]
-            keys = []
-            vals = []
-            scales = []
+            pred, keys, vals, scales = [masks[0:1]], [], [], []
             for t in range(1, T):
                 if t-1 == 0:
                     tmp_mask = masks[0:1]
@@ -474,12 +411,10 @@ def test(testloader, model, criterion, epoch, use_cuda, opt):
                     vals.append(val)
                     # scales.append(scale)
             
-            pred = torch.cat(pred, dim=0)
-            pred = pred.detach().cpu().numpy()
+            pred, pred = torch.cat(pred, dim=0), pred.detach().cpu().numpy()
             write_mask(pred, info, opt, directory=opt.output_dir)
 
             toc = time.time() - t1
-
             data_time.update(toc, 1)
            
             # plot progress
